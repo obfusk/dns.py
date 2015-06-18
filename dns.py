@@ -166,13 +166,13 @@ def unpack_dns_labels():
 
 # ... TODO ...
 
-def dns_query(*qr, ID = DEFAULT_ID, **flags):                    # {{{1
+def dns_query(qr, ID = DEFAULT_ID, **flags):                    # {{{1
   """
   create DNS query
 
   >>> import binascii as B, dns as D
   >>> q = D.dns_question("www.obfusk.ch")
-  >>> p = D.dns_query(q, ID = 0x7093)
+  >>> p = D.dns_query([q], ID = 0x7093)
   >>> D.b2s(B.hexlify(p))
   '70930100000100000000000003777777066f626675736b0263680000010001'
   """
