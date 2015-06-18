@@ -104,11 +104,15 @@ def argument_parser():                                          # {{{1
 # ... TODO ...
 
 def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
-  """
+  r"""
   get default nameservers from resolv.conf
 
-  >>> import dns as D
-  >>> D.default_nameservers("test/resolv.conf")
+  >>> import dns as D, tempfile
+  >>> n = tempfile.mkstemp()[1]
+  >>> d = "domain foo.example.com\nsearch lan.example.com\nnameserver 192.168.1.254\n"
+  >>> with open(n, "w") as f:
+  ...   f.write(d) and None   # no output
+  >>> D.default_nameservers(n)
   ['192.168.1.254']
   """
 
@@ -158,15 +162,49 @@ def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
 #                           ... RDATA ...                           #
 # ================================================================= #
 
-# TODO
 def unpack_dns(pkt):                                            # {{{1
-  """
+  r"""
   unpack DNS packet
 
   >>> import binascii as B, dns as D
-  >>> p = b"70930100000100000000000003777777066f626675736b0263680000010001"
-  >>> u = unpack_dns(B.unhexlify(p))
-  >>> # TODO
+  >>> d = b"70930100000100000000000003777777066f626675736b0263680000010001"
+  >>> p = B.unhexlify(d)
+  >>> u = unpack_dns(p)
+  >>> u["ID"]
+  28819
+  >>> sorted(u["flags"].items())
+  [('AA', 0), ('QR', 0), ('RA', 0), ('RD', 1)]
+  >>> len(u["qr"])
+  1
+  >>> sorted(u["qr"][0].items())
+  [('CLASS', 1), ('TYPE', 1), ('name', 'www.obfusk.ch')]
+  >>> u["an"], u["ns"], u["ar"]
+  ([], [], [])
+
+  >>> d = b"398880000001000000020000076578616d706c6503636f6d0000010001c014000200010002a300001401610c67746c642d73657276657273036e657400c014000200010002a30000040162c02bc014000200010002a3000004"
+  >>> p = B.unhexlify(d)
+  >>> u = unpack_dns(p)
+  >>> u["ID"]
+  14728
+  >>> sorted(u["flags"].items())
+  [('AA', 0), ('QR', 1), ('RA', 0), ('RD', 0)]
+  >>> len(u["qr"])
+  1
+  >>> sorted(u["qr"][0].items())
+  [('CLASS', 1), ('TYPE', 1), ('name', 'example.com')]
+  >>> len(u["ns"])
+  2
+  >>> D.unpack_dns_labels(u["ns"][0]["RDATA"], p)[0]
+  'a.gtld-servers.net'
+  >>> D.unpack_dns_labels(u["ns"][1]["RDATA"], p)[0]
+  'b.gtld-servers.net'
+  >>> u["ns"][0]["RDATA"] = u["ns"][1]["RDATA"] = None  # only show rest
+  >>> sorted(u["ns"][0].items())
+  [('CLASS', 1), ('RDATA', None), ('TTL', 172800), ('TYPE', 2), ('name', 'com')]
+  >>> sorted(u["ns"][1].items())
+  [('CLASS', 1), ('RDATA', None), ('TTL', 172800), ('TYPE', 2), ('name', 'com')]
+  >>> u["an"], u["ar"]
+  ([], [])
   """
 
   ID, flag_bits, n_qr, n_an, n_ns, n_ar = \
@@ -176,34 +214,38 @@ def unpack_dns(pkt):                                            # {{{1
     QR = flag_bits >> 15 & 1, AA = flag_bits >> 10 & 1,
     RD = flag_bits >>  8 & 1, RA = flag_bits >>  7 & 1
   )
-  qr, offset1 = unpack_dns_qr(n_qr, pkt[12:])
-  an, offset2 = unpack_dns_an(n_an, pkt[12+offset1:])
-  ns, offset3 = unpack_dns_ns(n_ns, pkt[12+offset1+offset2:])
-  ar, offset4 = unpack_dns_ar(n_ar, pkt[12+offset1+offset2+offset3:])
+  qr, offset1 = unpack_dns_qr(n_qr, pkt, 12)
+  an, offset2 = unpack_dns_rr(n_an, pkt, offset1)
+  ns, offset3 = unpack_dns_rr(n_ns, pkt, offset2)
+  ar, offset4 = unpack_dns_rr(n_ar, pkt, offset3)
   return dict(ID = ID, flags = flags, qr = qr, an = an,
                                       ns = ns, ar = ar)
                                                                 # }}}1
 
-# TODO
-def unpack_dns_qr(n, data):
+def unpack_dns_qr(n, data, offset = 0):                         # {{{1
   """unpack DNS questions"""
-  return None, 0
+  qr = []
+  for i in xrange(n):
+    name, n     = unpack_dns_labels(data[offset:], data)
+    TYPE, CLASS = struct.unpack("!HH", data[offset+n:offset+n+4])
+    offset     += n+4
+    qr.append(dict(name = name, TYPE = TYPE, CLASS = CLASS))
+  return qr, offset
+                                                                # }}}1
 
-# TODO
-def unpack_dns_an(n, data):
-  return None, 0
-
-# TODO
-def unpack_dns_ns(n, data):
-  return None, 0
-
-# TODO
-def unpack_dns_ar(n, data):
-  return None, 0
-
-# TODO
-def unpack_dns_rr(n, data):
-  return None, 0
+def unpack_dns_rr(n, data, offset = 0):                         # {{{1
+  """unpack DNS Resource Records"""
+  rr = []
+  for i in xrange(n):
+    name, n     = unpack_dns_labels(data[offset:], data)
+    TYPE, CLASS, TTL, RDLENGTH \
+                = struct.unpack("!HHiH", data[offset+n:offset+n+10])
+    RDATA       = data[offset+n+10:offset+n+10+RDLENGTH]
+    offset     += n+10+RDLENGTH
+    rr.append(dict(name = name, TYPE = TYPE, CLASS = CLASS,
+                   TTL = TTL, RDATA = RDATA))
+  return rr, offset
+                                                                # }}}1
 
 def unpack_dns_labels(data, pkt = None):                        # {{{1
   """
@@ -218,7 +260,7 @@ def unpack_dns_labels(data, pkt = None):                        # {{{1
   ('foo.obfusk.ch', 6)
   """
 
-  labels = []; ptr = False; offset = 0
+  labels, ptr, offset = [], False, 0
   while len(data):
     n = b2i(data[0])
     if n == 0:
