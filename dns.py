@@ -67,6 +67,8 @@ DEFAULT_CLASS     = "IN"
 
 RESOLV_CONF       = "/etc/resolv.conf"
 
+class Error(RuntimeError): pass
+
 # TODO
 def main(*args):                                                # {{{1
   n = argument_parser().parse_args(args)
@@ -157,26 +159,80 @@ def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
 # ================================================================= #
 
 # TODO
-def unpack_dns(pkt):
-  pass
+def unpack_dns(pkt):                                            # {{{1
+  """
+  unpack DNS packet
 
-def unpack_dns_labels(data):                                    # {{{1
+  >>> import binascii as B, dns as D
+  >>> p = b"70930100000100000000000003777777066f626675736b0263680000010001"
+  >>> u = unpack_dns(B.unhexlify(p))
+  >>> # TODO
+  """
+
+  ID, flag_bits, n_qr, n_an, n_ns, n_ar = \
+    struct.unpack("!HHHHHH", pkt[:12])
+  qr, an, ns, ar = [], [], [], []
+  flags = dict(
+    QR = flag_bits >> 15 & 1, AA = flag_bits >> 10 & 1,
+    RD = flag_bits >>  8 & 1, RA = flag_bits >>  7 & 1
+  )
+  qr, offset1 = unpack_dns_qr(n_qr, pkt[12:])
+  an, offset2 = unpack_dns_an(n_an, pkt[12+offset1:])
+  ns, offset3 = unpack_dns_ns(n_ns, pkt[12+offset1+offset2:])
+  ar, offset4 = unpack_dns_ar(n_ar, pkt[12+offset1+offset2+offset3:])
+  return dict(ID = ID, flags = flags, qr = qr, an = an,
+                                      ns = ns, ar = ar)
+                                                                # }}}1
+
+# TODO
+def unpack_dns_qr(n, data):
+  """unpack DNS questions"""
+  return None, 0
+
+# TODO
+def unpack_dns_an(n, data):
+  return None, 0
+
+# TODO
+def unpack_dns_ns(n, data):
+  return None, 0
+
+# TODO
+def unpack_dns_ar(n, data):
+  return None, 0
+
+# TODO
+def unpack_dns_rr(n, data):
+  return None, 0
+
+def unpack_dns_labels(data, pkt = None):                        # {{{1
   """
   unpack DNS domain name (as a sequence of labels, as per RFC 1035)
 
   >>> import binascii as B, dns as D
-  >>> l = B.unhexlify(b"03777777066f626675736b02636800")
-  >>> D.unpack_dns_labels(l)
-  'www.obfusk.ch'
+  >>> l1 = B.unhexlify(b"03777777066f626675736b02636800")
+  >>> D.unpack_dns_labels(l1)
+  ('www.obfusk.ch', 15)
+  >>> l2 = B.unhexlify(b"03666f6fc004")
+  >>> D.unpack_dns_labels(l2, l1)
+  ('foo.obfusk.ch', 6)
   """
 
-  labels = []
+  labels = []; ptr = False; offset = 0
   while len(data):
     n = b2i(data[0])
-    if n == 0: break
-    label, data = data[1:n+1], data[n+1:]
-    labels.append(b2s(label))
-  return ".".join(labels)
+    if n == 0:
+      if not ptr: offset += 1
+      break
+    if n >> 6 == 0b11:
+      if ptr: raise Error("will only follow one pointer")
+      data, ptr = pkt[(n & 0b111111)+b2i(data[1]):], True
+      offset += 2
+    else:
+      label, data = data[1:n+1], data[n+1:]
+      labels.append(b2s(label))
+      if not ptr: offset += n+1
+  return ".".join(labels), offset
                                                                 # }}}!
 
 # ... TODO ...
@@ -219,6 +275,7 @@ def dns_rr(name, TYPE = None, CLASS = None, TTL = 0, RDATA = b""):
           struct.pack("!HHiH", TYPE, CLASS, TTL, len(RDATA)) + RDATA
   # NB: RFC 1035 says TTL is signed (& unsigned ?!)
 
+# TODO
 def dns_labels(name):                                           # {{{1
   """
   DNS domain name (as a sequence of labels, as per RFC 1035)
@@ -228,6 +285,7 @@ def dns_labels(name):                                           # {{{1
   '03777777066f626675736b02636800'
   """
 
+  # TODO: create pointers?!
   labels = name.split(".")
   return b"".join(
     struct.pack("!B", len(l)) + s2b(l) for l in labels
