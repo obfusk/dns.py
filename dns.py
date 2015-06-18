@@ -160,9 +160,24 @@ def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
 def unpack_dns(pkt):
   pass
 
-# TODO
-def unpack_dns_labels():
-  pass
+def unpack_dns_labels(data):                                    # {{{1
+  """
+  unpack DNS domain name (as a sequence of labels, as per RFC 1035)
+
+  >>> import binascii as B, dns as D
+  >>> l = B.unhexlify(b"03777777066f626675736b02636800")
+  >>> D.unpack_dns_labels(l)
+  'www.obfusk.ch'
+  """
+
+  labels = []
+  while len(data):
+    n = b2i(data[0])
+    if n == 0: break
+    label, data = data[1:n+1], data[n+1:]
+    labels.append(b2s(label))
+  return ".".join(labels)
+                                                                # }}}!
 
 # ... TODO ...
 
