@@ -89,6 +89,22 @@ Non-authoritative answer:
 Name:   example.com
 Address: 93.184.216.34
 
+>>> D.verbose_nslookup("nonexistent.example.com", *a) # doctest: +ELLIPSIS
+Server:         127.0.0.1
+Address:        127.0.0.1#5301
+<BLANKLINE>
+** server can't find nonexistent.example.com: NXDOMAIN
+1
+
+>>> cmd   = sys.executable + " dns.py -l {} -p 5301 -s 127.0.0.1"
+>>> cmds  = "{} & {} & wait".format(cmd.format("example.com"),
+...                                 cmd.format("obfusk.ch"))
+>>> print(D.b2s(subprocess.check_output(cmds, shell = True))) # doctest: +ELLIPSIS
+Server:         127.0.0.1
+...
+Address: 93.184.216.34
+...
+
 ... TODO ...
 
 >>> p.kill()
@@ -321,6 +337,8 @@ def handle_query_reponse(p, addr, conns, socks):                # {{{1
     p2 = dns_make_query_reponse_non_authoritative(p["pkt"])
     socks[0].sendto(p2, conn["addr"])
     sock.close(); socks.remove(sock); del conns[p["ID"]]
+    print("responding to {} for {} (ID={})"
+          .format(conn["addr"], q["name"], p["ID"]))
   else:
     name    = unpack_dns_labels(p["ns"][0]["RDATA"], p["pkt"])[0]
     server  = None        # TODO: don't just pick first?!
