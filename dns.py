@@ -7,7 +7,7 @@
 # Date        : 2015-06-18
 #
 # Copyright   : Copyright (C) 2015  Felix C. Stegerman
-# Version     : v0.0.1
+# Version     : v0.0.2
 # License     : LGPLv3+
 #
 # --                                                            ; }}}1
@@ -81,7 +81,7 @@ Address:        ...#53
 >>> p = subprocess.Popen(c)
 >>> time.sleep(1)
 
->>> D.verbose_nslookup("example.com", *a)         # doctest: +ELLIPSIS
+>>> D.verbose_nslookup("example.com", *a)
 Server:         127.0.0.1
 Address:        127.0.0.1#5301
 <BLANKLINE>
@@ -89,7 +89,7 @@ Non-authoritative answer:
 Name:   example.com
 Address: 93.184.216.34
 
->>> D.verbose_nslookup("nonexistent.example.com", *a) # doctest: +ELLIPSIS
+>>> D.verbose_nslookup("nonexistent.example.com", *a)
 Server:         127.0.0.1
 Address:        127.0.0.1#5301
 <BLANKLINE>
@@ -105,7 +105,41 @@ Server:         127.0.0.1
 Address: 93.184.216.34
 ...
 
-... TODO ...
+>>> p.kill()
+
+
+>>> import subprocess, sys, time
+>>> a = ('127.0.0.1', 5302)
+>>> c = [sys.executable, "dns.py", "-B", a[0], "-p", str(a[1]),
+...      "-c", "-t", "2"]
+>>> p = subprocess.Popen(c)
+>>> time.sleep(1)
+
+>>> D.verbose_nslookup("example.com", *a)
+Server:         127.0.0.1
+Address:        127.0.0.1#5302
+<BLANKLINE>
+Non-authoritative answer:
+Name:   example.com
+Address: 93.184.216.34
+
+>>> D.verbose_nslookup("example.com", *a)
+Server:         127.0.0.1
+Address:        127.0.0.1#5302
+<BLANKLINE>
+Non-authoritative answer:
+Name:   example.com
+Address: 93.184.216.34
+
+>>> time.sleep(3)
+
+>>> D.verbose_nslookup("example.com", *a)
+Server:         127.0.0.1
+Address:        127.0.0.1#5302
+<BLANKLINE>
+Non-authoritative answer:
+Name:   example.com
+Address: 93.184.216.34
 
 >>> p.kill()
 
@@ -120,7 +154,7 @@ https://en.wikipedia.org/wiki/Root_name_server
 
 from __future__ import print_function
 
-import  argparse, binascii, itertools, os, random, re, select, \
+import  argparse, binascii, itertools, json, os, random, re, select, \
         struct, sys, time
 import  socket as S
 
@@ -143,21 +177,27 @@ else:
   xrange = range
                                                                 # }}}1
 
-__version__       = "0.0.1"
+__version__       = "0.0.2"
 
 DEFAULT_BIND      = "127.0.0.1"
 DEFAULT_PORT      = 53
 
 DEFAULT_ID        = lambda: os.getpid() ^ random.randint(0, 0xffff)
 DEFAULT_TIMEOUT   = 10
+DEFAULT_TTL       = 3600
 
 DEFAULT_TYPE      = "A"
 DEFAULT_CLASS     = "IN"
 
 RESOLV_CONF       = "/etc/resolv.conf"
+CACHE_FILE        = "cache"
 
 class Error(RuntimeError): pass
 class UnexpectedDataError(Error): pass
+
+class PacketWrapper(object):
+  def __init__(self, p): self.p = p
+  def __repr__(self): return "<PacketWrapper#" + repr(self.p) + ">"
 
 def main(*args):                                                # {{{1
   p = argument_parser(); n = p.parse_args(args)
@@ -169,7 +209,14 @@ def main(*args):                                                # {{{1
     if n.lookup:
       return verbose_nslookup(n.lookup, n.server, n.port, n.timeout)
     elif n.bind:
-      return verbose_server(n.bind, n.port)
+      if n.caching:
+        cache = load_cache() or {}; cache["__TTL__"] = n.ttl
+      else:
+        cache = None
+      try:
+        return verbose_server(n.bind, n.port, cache)
+      finally:
+        if cache: save_cache(cache)
     else:
       print("{}: error: neither --lookup not --bind specified" \
               .format(p.prog), file = sys.stderr)
@@ -193,6 +240,8 @@ def argument_parser():                                          # {{{1
                  metavar = "ADDR", const = DEFAULT_BIND,
                  help = "run the DNS server and bind to ADDR "
                         "(default: %(default)s)")
+  p.add_argument("--caching", "-c", action = "store_true",
+                 help = "enable caching")
   p.add_argument("--port", "-p", type = int, action = "store",
                  help = "the port for nslookup to connect to, "
                         "or the server to listen on "
@@ -203,15 +252,19 @@ def argument_parser():                                          # {{{1
   p.add_argument("--timeout", "-w", type = float, action = "store",
                  help = "the timeout "
                         "(default: %(default)s)")
+  p.add_argument("--ttl", "-t", type = int, action = "store",
+                 help = "the TTL (default: %(default)s)")
   p.add_argument("--test", action = "store_true",
                  help = "run tests (and no nslookup or DNS server)")
   p.add_argument("--verbose", "-v", action = "store_true",
                  help = "run tests verbosely")
   p.set_defaults(
+    caching = False,
     lookup  = None,
     port    = DEFAULT_PORT,
     server  = default_nameserver(),
     timeout = DEFAULT_TIMEOUT,
+    ttl     = DEFAULT_TTL,
   )
   return p
                                                                 # }}}1
@@ -274,9 +327,12 @@ def nslookup(addr, name, timeout):                              # {{{1
                                                                 # }}}1
 
 # TODO
-def verbose_server(bind, port, stop = None):                    # {{{1
+def verbose_server(bind, port, cache = None, stop = None):      # {{{1
   """DNS server"""
 
+  print("listening on {}:{} (cache={}, ttl={}) ..." \
+        .format(bind, port, cache is not None,
+                cache and cache["__TTL__"] ))
   sock = S.socket(S.AF_INET, S.SOCK_DGRAM)
   try:
     sock.setblocking(0); sock.bind((bind, port))
@@ -289,9 +345,9 @@ def verbose_server(bind, port, stop = None):                    # {{{1
         try:
           if s is sock:
             conns[ID] = {}
-            handle_query(p, addr, conns[ID], socks)
+            handle_query(p, addr, conns[ID], socks, cache)
           else:
-            handle_query_reponse(p, addr, conns, socks)
+            handle_query_reponse(p, addr, conns, socks, cache)
         except UnexpectedDataError as e:
           if conns[ID]["sock"]:
             conns[ID]["sock"].close()
@@ -303,7 +359,7 @@ def verbose_server(bind, port, stop = None):                    # {{{1
                                                                 # }}}1
 
 # TODO
-def handle_query(p, addr, conn, socks):                         # {{{1
+def handle_query(p, addr, conn, socks, cache):                  # {{{1
   """handle query"""
 
   conn.update(sock = None, addr = addr)
@@ -314,17 +370,24 @@ def handle_query(p, addr, conn, socks):                         # {{{1
     raise UnexpectedDataError("unexpeced CLASS!")   # TODO
   if q["TYPE"] != TYPES["A"]:
     raise UnexpectedDataError("unexpeced TYPE!")    # TODO
-  # TODO: caching
-  print("query for {} from {} (ID={})"
-          .format(q["name"], addr, p["ID"]))
-  conn["server"]  = server  = random_root_server()
-  conn["sock"]    = sock    = S.socket(S.AF_INET, S.SOCK_DGRAM)
-  send_query(sock, (server, DEFAULT_PORT), q["name"], p["ID"], False)
-  if sock not in socks: socks.append(sock)
+  c_name, c_servers, c_pkt = cache_lookup(cache, q["name"])
+  if c_name == q["name"] and c_pkt:
+    p2 = dns_modify_query_reponse(c_pkt, p["ID"])   # TODO: TTL
+    socks[0].sendto(p2, conn["addr"])
+    print("responding to {} for {} (cached)"
+          .format(conn["addr"], q["name"]))
+  else:
+    print("query for {} from {} (ID={})"
+            .format(q["name"], addr, p["ID"]))
+    conn["server"]  = server  = random.choice(c_servers) \
+                                if c_servers else random_root_server()
+    conn["sock"]    = sock    = S.socket(S.AF_INET, S.SOCK_DGRAM)
+    send_query(sock, (server, DEFAULT_PORT), q["name"], p["ID"], False)
+    if sock not in socks: socks.append(sock)
                                                                 # }}}1
 
 # TODO
-def handle_query_reponse(p, addr, conns, socks):                # {{{1
+def handle_query_reponse(p, addr, conns, socks, cache):         # {{{1
   """handle response to query"""
 
   # TODO: errors, cleanup, ...
@@ -334,25 +397,87 @@ def handle_query_reponse(p, addr, conns, socks):                # {{{1
           .format(q["name"], addr, conn["addr"], p["ID"]))
   if p["flags"]["RCODE"] != 0 or len(p["an"]) > 0:  # done!
     # TODO: caching
-    p2 = dns_make_query_reponse_non_authoritative(p["pkt"])
+    p2 = dns_modify_query_reponse(p["pkt"])
     socks[0].sendto(p2, conn["addr"])
     sock.close(); socks.remove(sock); del conns[p["ID"]]
     print("responding to {} for {} (ID={})"
           .format(conn["addr"], q["name"], p["ID"]))
+    if len(p["an"]) > 0:
+      cache_response(cache, p["an"][0]["name"], [addr[0]], p["pkt"])
   else:
-    name    = unpack_dns_labels(p["ns"][0]["RDATA"], p["pkt"])[0]
-    server  = None        # TODO: don't just pick first?!
+    names   = [ unpack_dns_labels(x["RDATA"], p["pkt"])[0]
+                  for x in p["ns"] ]
+    servers = []
     for a in p["ar"]:
       if a["CLASS"] != CLASSES["IN"]: continue
       if a["TYPE"] != TYPES["A"]: continue
-      if a["name"] == name:
-        conn["server"] = server = S.inet_ntoa(a["RDATA"])
-    if server is None:
-      # assume nameserver in other domain
-      server = name   # TODO: no cheating?!
+      for name in names:
+        if a["name"] == name:
+          servers.append(S.inet_ntoa(a["RDATA"]))
+    if not servers:
+      # assume nameserver in other domain; TODO: no cheating?!
+      servers = names
+    conn["server"] = server = random.choice(servers)
+    cache_response(cache, p["ns"][0]["name"], servers)
     send_query(sock, (server, DEFAULT_PORT), q["name"], p["ID"],
                False)
                                                                 # }}}1
+
+# TODO
+def cache_response(c, name, servers, packet = None):            # {{{1
+  if c is None: return
+  for label in reversed(name.split(".")):
+    if label not in c:
+      p = c[label] = dict(tree = {}, servers = [], packet = None,
+                          time = 0)
+    p = c[label]; c = p["tree"]
+  p["servers"] = servers; p["time"] = time.time()
+  if not p["packet"] and packet: p["packet"] = PacketWrapper(packet)
+                                                                # }}}1
+
+# TODO
+def cache_lookup(c, name):                                      # {{{1
+  clean_cache(c)  # TODO
+  s = []; p = None; n = ""
+  if c is None: return n, s, p
+  for label in reversed(name.split(".")):
+    if label not in c: break
+    n = label + ("." + n if n else "")
+    s = c[label]["servers"]
+    p = c[label]["packet"]
+    c = c[label]["tree"]
+  return n, s, p and p.p
+                                                                # }}}1
+
+# TODO
+def clean_cache(c):                                             # {{{1
+  if c is None: return
+  ttl = c["__TTL__"]; todo = [c]
+  while todo:
+    d = todo.pop()
+    for label in d:
+      if label == "__TTL__": continue
+      x = d[label]
+      if time.time() - x["time"] > ttl:   # TODO: use original TTL?!
+        x["servers"] = []; x["packet"] = None
+        todo.append(x["tree"])
+                                                                # }}}1
+
+def load_cache():                                               # {{{1
+  try:
+    with open(CACHE_FILE) as f:
+      return json.load(f, object_hook = from_json)
+  except IOError as e:
+    if e.errno != 2: raise
+    else: return None   # no such file
+  except ValueError:
+    return {}
+                                                                # }}}1
+
+def save_cache(c):
+  with open(CACHE_FILE, "w") as f:
+    json.dump(c, f, sort_keys = True, indent = 2,
+              separators = (',', ': '), default = to_json)
 
 def send_query(sock, addr, name, ID = None, recurse = True):
   """send DNS query"""
@@ -568,9 +693,10 @@ def unpack_dns_labels(data, pkt = None):                        # {{{1
   return ".".join(labels), offset
                                                                 # }}}!
 
-def dns_make_query_reponse_non_authoritative(p):
-  """make response non-authoritative"""
-  return p[:2] + i2b(b2i(p[2:4]) & 0b1111101111111111) + p[4:]
+def dns_modify_query_reponse(p, ID = None):
+  """make response non-authoritative (and modify the ID)"""
+  ID_ = struct.pack("!H", ID) if ID else p[:2]
+  return ID_ + i2b(b2i(p[2:4]) & 0b1111101111111111) + p[4:]
 
 def dns_query(qr, ID = None, **flags):                          # {{{1
   """
@@ -699,6 +825,31 @@ def i2b(x, n = 1):
   """convert integer to bytes of length (at least) n"""
   if isinstance(x, bytes): return x
   return binascii.unhexlify(s2b("%0*x" % (n*2,x)))
+
+# TODO
+if sys.version_info.major == 2:                                 # {{{1
+  def to_json(pyobj):
+    if isinstance(pyobj, PacketWrapper):
+      return { "__class__": "PacketWrapper",
+               "__value__": map(ord, pyobj.p) }
+    raise TypeError(repr(pyobj) + " is not JSON serializable")
+  def from_json(jsonobj):
+    if "__class__" in jsonobj:
+      if jsonobj["__class__"] == "PacketWrapper":
+        return PacketWrapper("".join(map(chr, jsonobj["__value__"])))
+    return jsonobj
+else:
+  def to_json(pyobj):
+    if isinstance(pyobj, PacketWrapper):
+       return { "__class__": "PacketWrapper",
+                "__value__": list(pyobj.p) }
+    raise TypeError(repr(pyobj) + " is not JSON serializable")
+  def from_json(jsonobj):
+    if "__class__" in jsonobj:
+      if jsonobj["__class__"] == "PacketWrapper":
+        return PacketWrapper(bytes(jsonobj["__value__"]))
+    return jsonobj
+                                                                # }}}1
 
 if __name__ == "__main__":
   sys.exit(main(*sys.argv[1:]))
