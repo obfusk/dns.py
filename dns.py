@@ -21,6 +21,52 @@ Examples
 
 >>> import dns as D
 
+>>> D.verbose_nslookup("example.com")             # doctest: +ELLIPSIS
+Server:         ...
+Address:        ...#53
+<BLANKLINE>
+Non-authoritative answer:
+Name:   example.com
+Address: 93.184.216.34
+
+>>> D.verbose_nslookup("google.com", "8.8.8.8")   # doctest: +ELLIPSIS
+Server:         8.8.8.8
+Address:        8.8.8.8#53
+<BLANKLINE>
+Non-authoritative answer:
+Name:   google.com
+Address: ...
+Name:   google.com
+Address: ...
+...
+
+>>> D.verbose_nslookup("google.com", "ns1.google.com") # doctest: +ELLIPSIS
+Server:         ns1.google.com
+Address:        ...#53
+<BLANKLINE>
+Name:   google.com
+Address: ...
+Name:   google.com
+Address: ...
+...
+
+>>> D.verbose_nslookup("localhost.github.com")    # doctest: +ELLIPSIS
+Server:         ...
+Address:        ...#53
+<BLANKLINE>
+Non-authoritative answer:
+localhost.github.com    canonical name = github.map.fastly.net.
+Name:   github.map.fastly.net
+Address: 23.235.43.133
+
+>>> D.verbose_nslookup("nonexistent.example.com") # doctest: +ELLIPSIS
+Server:         ...
+Address:        ...#53
+<BLANKLINE>
+** server can't find nonexistent.example.com: NXDOMAIN
+1
+
+
 ... TODO ...
 
 
@@ -61,6 +107,7 @@ __version__       = "0.0.1"
 
 DEFAULT_ID        = os.getpid()
 DEFAULT_PORT      = 53
+DEFAULT_TIMEOUT   = 10
 
 DEFAULT_TYPE      = "A"
 DEFAULT_CLASS     = "IN"
@@ -77,7 +124,10 @@ def main(*args):                                                # {{{1
     doctest.testmod(verbose = n.verbose)
     return 0
   try:
-    pass  # TODO
+    if n.lookup:
+      return verbose_nslookup(n.lookup, n.server, n.port, n.timeout)
+    else:
+      raise("TODO") # TODO
   except KeyboardInterrupt:
     return 1
   return 0
@@ -91,17 +141,129 @@ def argument_parser():                                          # {{{1
                  help = "show this help message and exit")
   p.add_argument("--version", action = "version",
                  version = "%(prog)s {}".format(__version__))
+  p.add_argument("--lookup", "-l", metavar = "NAME", action = "store",
+                 help = "look up information for host NAME")
+  # ... TODO ...
+  p.add_argument("--port", "-p", type = int, action = "store",
+                 help = "the port for nslookup to connect to, "
+                        "or the server to listen on "
+                        "(default: %(default)s)")
+  p.add_argument("--server", "-s", action = "store",
+                 help = "the server to use "
+                        "(current default: %(default)s)")
+  p.add_argument("--timeout", "-w", type = float, action = "store",
+                 help = "the timeout "
+                        "(default: %(default)s)")
   p.add_argument("--test", action = "store_true",
                  help = "run tests (and no nslookup or DNS server)")
   p.add_argument("--verbose", "-v", action = "store_true",
                  help = "run tests verbosely")
-  p.set_defaults()
+  p.set_defaults(
+    lookup  = None,
+    port    = DEFAULT_PORT,
+    server  = default_nameserver(),
+    timeout = DEFAULT_TIMEOUT,
+  )
   return p
                                                                 # }}}1
 
-# ... strip(".") ...
+# TODO
+def verbose_nslookup(name, server = None, port = DEFAULT_PORT,  # {{{1
+                    timeout = DEFAULT_TIMEOUT):
+  """nslookup verbosely"""
+
+  name = name.strip(".")
+  if server is None:
+    server = default_nameserver()
+    if server is None: raise Error("no server") # TODO
+  if server.split(".")[-1].isdigit():
+    host = addr = server
+  else:
+    info = S.gethostbyname_ex(server)
+    host, addr = info[0], info[2][0]
+  print("{:15} {}".format("Server:", server))
+  print("{:15} {}#{}".format("Address:", addr, port))
+  print()
+  p = nslookup((addr, port), name, timeout)
+  if p == TIMEOUT:
+    print("timeout!") # TODO
+    return 1
+  elif p["flags"]["RCODE"] != 0:
+    c = RCODES.get(p["flags"]["RCODE"], "???")
+    print("** server can't find {}: {}".format(name, c))
+    return 1
+  else:
+    if not p["flags"]["AA"]:
+      print("Non-authoritative answer:")
+    for a in p["an"]:
+      if a["CLASS"] != CLASSES["IN"]:
+        raise("unexpeced CLASS!") # TODO
+      else:
+        if a["TYPE"] == TYPES["A"]:
+          name    = a["name"]
+          address = S.inet_ntoa(a["RDATA"])
+          print("{:7} {}".format("Name:", name))
+          print("{} {}".format("Address:", address))
+        elif a["TYPE"] == TYPES["CNAME"]:
+          name    = a["name"]
+          cname   = unpack_dns_labels(a["RDATA"], p["pkt"])[0]
+          if not cname.endswith("."): cname += "."
+          print("{:23} canonical name = {}".format(name, cname))
+        else:
+          raise("unexpeced TYPE!") # TODO
+                                                                # }}}1
+
+def nslookup(addr, name, timeout):                              # {{{1
+  """use the server at addr:port to look up name"""
+
+  sock = S.socket(S.AF_INET, S.SOCK_DGRAM)
+  try:
+    ID  = send_query(sock, addr, name)
+    p   = recv_response(sock, addr, ID, timeout)
+    return p
+  finally:
+    sock.close()
+                                                                # }}}1
+
+def send_query(sock, addr, name, ID = DEFAULT_ID,
+               recurse = True):
+  """send DNS query"""
+  q = dns_question(name)
+  p = dns_query([q], ID = ID, RD = int(bool(recurse)))
+  sock.sendto(p, addr)
+  return ID
+
+# TODO: errors, etc.
+def recv_response(sock, _addr, _ID, timeout):
+  """receive DNS query response"""
+  def f(pkt, _recv_addr):
+    return unpack_dns(pkt)
+  return recv_reply(sock, timeout, f)
+
+def recv_reply(sock, timeout, f):                               # {{{1
+  """receive reply"""
+
+  while timeout > 0:
+    t1 = time.time()
+    rs, _, _ = select.select([sock], [], [], timeout)
+    if rs == []: return TIMEOUT
+    for s in rs:
+      pkt, recv_addr = s.recvfrom(1024)
+      r = f(pkt, recv_addr)
+      if r is not None:
+        r.update(recv_addr = recv_addr, length = len(pkt))
+        return r
+    timeout -= (time.time() - t1)
+  return TIMEOUT
+                                                                # }}}1
 
 # ... TODO ...
+
+def default_nameserver():
+  """the default nameserver (if any)"""
+  servers = default_nameservers()
+  if servers: return servers[0]
+  return None
 
 def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
   r"""
@@ -162,6 +324,7 @@ def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
 #                           ... RDATA ...                           #
 # ================================================================= #
 
+# TODO
 def unpack_dns(pkt):                                            # {{{1
   r"""
   unpack DNS packet
@@ -173,7 +336,7 @@ def unpack_dns(pkt):                                            # {{{1
   >>> u["ID"]
   28819
   >>> sorted(u["flags"].items())
-  [('AA', 0), ('QR', 0), ('RA', 0), ('RD', 1)]
+  [('AA', 0), ('QR', 0), ('RA', 0), ('RCODE', 0), ('RD', 1)]
   >>> len(u["qr"])
   1
   >>> sorted(u["qr"][0].items())
@@ -187,7 +350,7 @@ def unpack_dns(pkt):                                            # {{{1
   >>> u["ID"]
   14728
   >>> sorted(u["flags"].items())
-  [('AA', 0), ('QR', 1), ('RA', 0), ('RD', 0)]
+  [('AA', 0), ('QR', 1), ('RA', 0), ('RCODE', 0), ('RD', 0)]
   >>> len(u["qr"])
   1
   >>> sorted(u["qr"][0].items())
@@ -211,15 +374,16 @@ def unpack_dns(pkt):                                            # {{{1
     struct.unpack("!HHHHHH", pkt[:12])
   qr, an, ns, ar = [], [], [], []
   flags = dict(
-    QR = flag_bits >> 15 & 1, AA = flag_bits >> 10 & 1,
-    RD = flag_bits >>  8 & 1, RA = flag_bits >>  7 & 1
+    QR    = flag_bits >> 15 & 1, AA = flag_bits >> 10 & 1,
+    RD    = flag_bits >>  8 & 1, RA = flag_bits >>  7 & 1,
+    RCODE = flag_bits & 0b1111      # TODO: all flags
   )
   qr, offset1 = unpack_dns_qr(n_qr, pkt, 12)
   an, offset2 = unpack_dns_rr(n_an, pkt, offset1)
   ns, offset3 = unpack_dns_rr(n_ns, pkt, offset2)
   ar, offset4 = unpack_dns_rr(n_ar, pkt, offset3)
   return dict(ID = ID, flags = flags, qr = qr, an = an,
-                                      ns = ns, ar = ar)
+                                      ns = ns, ar = ar, pkt = pkt)
                                                                 # }}}1
 
 def unpack_dns_qr(n, data, offset = 0):                         # {{{1
@@ -290,7 +454,8 @@ def dns_query(qr, ID = DEFAULT_ID, **flags):                    # {{{1
   '70930100000100000000000003777777066f626675736b0263680000010001'
   """
 
-  return dns_packet(ID, qr = qr, **dict(QR = 0, RD = 1, **flags))
+  fl = dict(QR = 0, RD = 1); fl.update(flags)
+  return dns_packet(ID, qr = qr, **fl)
                                                                 # }}}1
 
 # TODO
@@ -363,6 +528,20 @@ TYPES_REV = dict( (v,k) for (k,v) in TYPES.items() )
 CLASSES     = dict(IN = 1)
 CLASSES_REV = dict( (v,k) for (k,v) in CLASSES.items() )
 
+RCODES = {                                                      # {{{1
+  1 : "FORMERR" ,
+  2 : "SERVFAIL",
+  3 : "NXDOMAIN",
+  4 : "NOTIMP"  ,
+  5 : "REFUSED" ,
+  6 : "YXDOMAIN",
+  7 : "YXRRSET" ,
+  8 : "NXRRSET" ,
+  9 : "NOTAUTH" ,
+  10: "NOTZONE" ,
+  16: "BADVERS" ,
+}                                                               # }}}1
+
 ROOT_SERVERS = dict(                                            # {{{1
   a = "198.41.0.4",
   b = "192.228.79.201",
@@ -378,6 +557,8 @@ ROOT_SERVERS = dict(                                            # {{{1
   l = "199.7.83.42",
   m = "202.12.27.33",
 )                                                               # }}}1
+
+TIMEOUT = "__timeout__"
 
 def print_(x):
   """print w/o newline and flush"""
