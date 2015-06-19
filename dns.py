@@ -148,7 +148,7 @@ __version__       = "0.0.1"
 DEFAULT_BIND      = "127.0.0.1"
 DEFAULT_PORT      = 53
 
-DEFAULT_ID        = os.getpid()
+DEFAULT_ID        = lambda: os.getpid() ^ random.randint(0, 0xffff)
 DEFAULT_TIMEOUT   = 10
 
 DEFAULT_TYPE      = "A"
@@ -354,8 +354,9 @@ def handle_query_reponse(p, addr, conns, socks):                # {{{1
                False)
                                                                 # }}}1
 
-def send_query(sock, addr, name, ID = DEFAULT_ID, recurse = True):
+def send_query(sock, addr, name, ID = None, recurse = True):
   """send DNS query"""
+  if ID is None: ID = DEFAULT_ID()
   q = dns_question(name)
   p = dns_query([q], ID = ID, RD = int(bool(recurse)))
   sock.sendto(p, addr)
@@ -571,7 +572,7 @@ def dns_make_query_reponse_non_authoritative(p):
   """make response non-authoritative"""
   return p[:2] + i2b(b2i(p[2:4]) & 0b1111101111111111) + p[4:]
 
-def dns_query(qr, ID = DEFAULT_ID, **flags):                    # {{{1
+def dns_query(qr, ID = None, **flags):                          # {{{1
   """
   create DNS query
 
@@ -582,6 +583,7 @@ def dns_query(qr, ID = DEFAULT_ID, **flags):                    # {{{1
   '70930100000100000000000003777777066f626675736b0263680000010001'
   """
 
+  if ID is None: ID = DEFAULT_ID()
   fl = dict(QR = 0, RD = 1); fl.update(flags)
   return dns_packet(ID, qr = qr, **fl)
                                                                 # }}}1
