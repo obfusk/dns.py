@@ -226,7 +226,6 @@ def main(*args):                                                # {{{1
   return 0
                                                                 # }}}1
 
-# TODO
 def argument_parser():                                          # {{{1
   p = argparse.ArgumentParser(description = "nslookup + DNS server",
                               add_help    = False)
@@ -390,13 +389,12 @@ def handle_query(p, addr, conn, socks, cache):                  # {{{1
 def handle_query_reponse(p, addr, conns, socks, cache):         # {{{1
   """handle response to query"""
 
-  # TODO: errors, cleanup, ...
+  # TODO: error handling, ...
 
   conn = conns[p["ID"]]; sock = conn["sock"]; q = conn["query"]
   print("response for {} from {} for {} (ID={})"
           .format(q["name"], addr, conn["addr"], p["ID"]))
   if p["flags"]["RCODE"] != 0 or len(p["an"]) > 0:  # done!
-    # TODO: caching
     p2 = dns_modify_query_reponse(p["pkt"])
     socks[0].sendto(p2, conn["addr"])
     sock.close(); socks.remove(sock); del conns[p["ID"]]
@@ -826,7 +824,6 @@ def i2b(x, n = 1):
   if isinstance(x, bytes): return x
   return binascii.unhexlify(s2b("%0*x" % (n*2,x)))
 
-# TODO
 if sys.version_info.major == 2:                                 # {{{1
   def to_json(pyobj):
     if isinstance(pyobj, PacketWrapper):
