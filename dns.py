@@ -4,11 +4,11 @@
 #
 # File        : dns.py
 # Maintainer  : Felix C. Stegerman <flx@obfusk.net>
-# Date        : 2015-06-18
+# Date        : 2015-09-12
 #
 # Copyright   : Copyright (C) 2015  Felix C. Stegerman
-# Version     : v0.0.2
-# License     : LGPLv3+
+# Version     : v0.0.3
+# License     : GPLv3+
 #
 # --                                                            ; }}}1
 
@@ -105,13 +105,12 @@ Server:         127.0.0.1
 Address: 93.184.216.34
 ...
 
->>> p.kill()
+>>> p.terminate()
 
 
 >>> import subprocess, sys, time
 >>> a = ('127.0.0.1', 5302)
->>> c = [sys.executable, "dns.py", "-B", a[0], "-p", str(a[1]),
-...      "-c", "-t", "2"]
+>>> c = [sys.executable, "dns.py", "-B", a[0], "-p", str(a[1]), "-c", "-t", "2"]
 >>> p = subprocess.Popen(c)
 >>> time.sleep(1)
 
@@ -141,7 +140,7 @@ Non-authoritative answer:
 Name:   example.com
 Address: 93.184.216.34
 
->>> p.kill()
+>>> p.terminate()
 
 
 References
@@ -177,7 +176,7 @@ else:
   xrange = range
                                                                 # }}}1
 
-__version__       = "0.0.2"
+__version__       = "0.0.3"
 
 DEFAULT_BIND      = "127.0.0.1"
 DEFAULT_PORT      = 53
@@ -258,8 +257,6 @@ def argument_parser():                                          # {{{1
   p.add_argument("--verbose", "-v", action = "store_true",
                  help = "run tests verbosely")
   p.set_defaults(
-    caching = False,
-    lookup  = None,
     port    = DEFAULT_PORT,
     server  = default_nameserver(),
     timeout = DEFAULT_TIMEOUT,
@@ -334,6 +331,7 @@ def verbose_server(bind, port, cache = None, stop = None):      # {{{1
                 cache and cache["__TTL__"] ))
   sock = S.socket(S.AF_INET, S.SOCK_DGRAM)
   try:
+    sock.setsockopt(S.SOL_SOCKET, S.SO_REUSEADDR, 1)
     sock.setblocking(0); sock.bind((bind, port))
     conns = {}; socks = [sock]
     while stop is None or not stop.is_set():
@@ -518,11 +516,10 @@ def default_nameservers(resolv_conf = RESOLV_CONF):             # {{{1
   get default nameservers from resolv.conf
 
   >>> import dns as D, tempfile
-  >>> n = tempfile.mkstemp()[1]
-  >>> d = "domain foo.example.com\nsearch lan.example.com\nnameserver 192.168.1.254\n"
-  >>> with open(n, "w") as f:
-  ...   f.write(d) and None   # no output
-  >>> D.default_nameservers(n)
+  >>> f = tempfile.NamedTemporaryFile()
+  >>> d = b"domain foo.example.com\nsearch lan.example.com\nnameserver 192.168.1.254\n"
+  >>> _ = f.write(d); f.flush()
+  >>> D.default_nameservers(f.name)
   ['192.168.1.254']
   """
 
